@@ -19,14 +19,14 @@ Read in the input files and pre-process the matrix containing end-point output f
 library(ggplot2)
 library(reshape2)
 df <- as.data.frame(read.csv("~/Documents/Project/Input/input.csv",header=T,sep=","))
-mmtx <- as.matrix(df[,61:321])
+mmtx <- as.matrix(df[,61:321]) #master matrix for the mutations information in each tumor sample
 sample_ID <- as.character(colnames(df)[61:321])
 MSI_info <- as.data.frame(read.csv("~/Documents/Project/Input/MSI_status.csv",header=T,sep=","))
 colnames(MSI_info) <- c("sample_ID","MSI_status")
 df_ID_MSI <- merge(as.data.frame(sample_ID),MSI_info,by="sample_ID",sort=F)
 sample_MSI <- as.character(df_ID_MSI$MSI_status)
 sample_MSI[which(is.na(sample_MSI))] <- "unknown"
-df_ID_MSI$MSI_status <- sample_MSI
+df_ID_MSI$MSI_status <- sample_MSI #dataframe containing matched MSI status for each tumor sample
 ```
 
 ## Step Two
@@ -44,26 +44,17 @@ Annotate each mutation entry for the following classes:
     
 
 ```{r echo=FALSE}
-df_gene_mutation <- df[,c(43,44,46,47,9,1,2,6,4,5,322,323,324)]
-mutation_class <- rep("-",3009)
-mutation_class[which(nchar(as.character(df_gene_mutation$REF)) > 1 | nchar(as.character(df_gene_mutation$ALT) > 1))] <- "c-Indels"
-mutation_class[which(df_gene_mutation$cDNA_position=="-" & (nchar(as.character(df_gene_mutation$REF)) > 1 | nchar(as.character(df_gene_mutation$ALT) > 1)))] <- "nc-Indels"
-mutation_class[which(nchar(as.character(df_gene_mutation$REF)) == 1 & nchar(as.character(df_gene_mutation$ALT) == 1))] <- "c-SNVs"
-mutation_class[which(df_gene_mutation$cDNA_position=="-" & nchar(as.character(df_gene_mutation$REF)) == 1 & nchar(as.character(df_gene_mutation$ALT) == 1))] <- "nc-SNVs"
+df_gene_mutation <- df[,c(43,44,46,47,9,1,2,6,4,5,322,323,324)] #dataframe containing information of each mutation entry
+mutation_class <- rep("-",nrow(mmtx))
+coding_noncoding <- rep("c",nrow(mmtx)) #coding: "1"; noncoding: "0"
+mutation_class[which(nchar(as.character(df_gene_mutation$REF)) > 1 | nchar(as.character(df_gene_mutation$ALT) > 1))] <- "Indels"
+coding_noncoding[which(df_gene_mutation$cDNA_position=="-" & (nchar(as.character(df_gene_mutation$REF)) > 1 | nchar(as.character(df_gene_mutation$ALT) > 1)))] <- "nc"
+mutation_class[which(nchar(as.character(df_gene_mutation$REF)) == 1 & nchar(as.character(df_gene_mutation$ALT) == 1))] <- "SNVs"
+coding_noncoding[which(df_gene_mutation$cDNA_position=="-" & nchar(as.character(df_gene_mutation$REF)) == 1 & nchar(as.character(df_gene_mutation$ALT) == 1))] <- "nc"
 df_gene_mutation$mutation_class <- mutation_class
-table(mutation_class)
-#cDNA_ref <- rep("-",3009)
-#cDNA_alt <- rep("-",3009)
-#for (i in 1:3009){
-#  if(mutation_class[i]=="SNVs"){
-#    cDNA_ref[i] <- unlist(strsplit(as.character(df_gene_mutation$Codons)[i],"/"))[1]
-#    cDNA_ref[i] <- gsub("[^::A-Z::]","", cDNA_ref[i])
-#    cDNA_alt[i] <- unlist(strsplit(as.character(df_gene_mutation$Codons)[i],"/"))[2]
-#    cDNA_alt[i] <- gsub("[^::A-Z::]","", cDNA_alt[i])
-#  }
-#}
-#df_gene_mutation$allele_ref <- cDNA_ref
-#df_gene_mutation$allele_alt <- cDNA_alt
+df_gene_mutation$coding_noncoding <- coding_noncoding
+print("A summary of the number of Indels and SNVs among all the mutation entries, and whether they reside in coding sequence or not:")
+table(data.frame(df_gene_mutation$mutation_class,df_gene_mutation$coding_noncoding))
 ```
 
 ## Step Three
@@ -72,44 +63,39 @@ Count the number of entries of various classes in each tumor sample
 
 ```{r echo=FALSE}
 #####overall distribution#####
-###counting total number of mutations in each sample###
-total_mutations <- rep(0,length(sample_ID))
-for (i in 1:length(sample_ID)){
-  total_mutations[i] <- length(which(mmtx[,i]!="."))+length(which(mmtx[,i]=="1/1"))
-}
-df_ID_MSI$total_mutations <- total_mutations
+mutations_per_tumor <- function(m_class){
+  mutation_count <- rep(0,length(sample_ID))
+  if(m_class=="Indels"){
+    submtx <- mmtx[which(df_gene_mutation$mutation_class=="Indels"),]
+  }else if(m_class=="SNVs"){
+    submtx <- mmtx[which(df_gene_mutation$mutation_class=="SNVs"),]
+  }else{submtx <- mmtx}
+  for (i in 1:length(sample_ID)){
+  mutation_count[i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
+  }
+  mutation_count
+} #function to count number of various mutations in each tumor sample regarless of coding or noncoding mutations
 
-###counting total number of Indels in each sample###
-total_Indels <- rep(0,length(sample_ID))
-submtx <- mmtx[which(df_gene_mutation$mutation_class=="c-Indels" | df_gene_mutation$mutation_class=="nc-Indels"),]
-for (i in 1:length(sample_ID)){
-  total_Indels[i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
-df_ID_MSI$total_Indels <- total_Indels
+coding_mutations_per_tumor <- function(m_class){
+  mutation_count <- rep(0,length(sample_ID))
+  if(m_class=="Indels"){
+    submtx <- mmtx[which(df_gene_mutation$mutation_class=="Indels" & df_gene_mutation$coding_noncoding=="c"),]
+  }else if(m_class=="SNVs"){
+    submtx <- mmtx[which(df_gene_mutation$mutation_class=="SNVs" & df_gene_mutation$coding_noncoding=="c"),]
+  }else{submtx <- mmtx[which(df_gene_mutation$coding_noncoding=="c")]}
+  for (i in 1:length(sample_ID)){
+  mutation_count[i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
+  }
+  mutation_count
+} #function to count number of various coding mutations in each tumor sample
 
-###counting total number of Indels within coding sequence in each sample###
-coding_Indels <- rep(0,length(sample_ID))
-submtx <- mmtx[which(df_gene_mutation$mutation_class=="c-Indels"),]
-for (i in 1:length(sample_ID)){
-  coding_Indels[i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
-df_ID_MSI$coding_Indels <- coding_Indels
+###counting number of mutations in each sample###
+df_ID_MSI$total_mutations <- mutations_per_tumor("all")
+df_ID_MSI$total_Indels <- mutations_per_tumor("Indels")
+df_ID_MSI$total_SNVs <- mutations_per_tumor("SNVs")
+df_ID_MSI$coding_Indels <- coding_mutations_per_tumor("Indels")
+df_ID_MSI$coding_SNVs <- coding_mutations_per_tumor("SNVs")
 
-###counting total number of SNVs in each sample###
-total_SNVs <- rep(0,length(sample_ID))
-submtx <- mmtx[which(df_gene_mutation$mutation_class=="c-SNVs" | df_gene_mutation$mutation_class=="nc-SNVs"),]
-for (i in 1:length(sample_ID)){
-  total_SNVs[i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
-df_ID_MSI$total_SNVs <- total_SNVs
-
-###counting total number of SNVs within coding sequence in each sample###
-coding_SNVs <- rep(0,length(sample_ID))
-submtx <- mmtx[which(df_gene_mutation$mutation_class=="c-SNVs"),]
-for (i in 1:length(sample_ID)){
-  coding_SNVs[i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
-df_ID_MSI$coding_SNVs <- coding_SNVs
 
 #####gene-level distribution#####
 gene_list <- unique(as.character(df$SYMBOL))
@@ -118,20 +104,21 @@ gene_total_Indels <- rep(0,length(gene_list))
 gene_coding_Indels <- rep(0,length(gene_list))
 gene_total_SNVs <- rep(0,length(gene_list))
 gene_coding_SNVs <- rep(0,length(gene_list))
-mtx_gene_sample_Indels <- matrix(0,length(gene_list),length(sample_ID))
-mtx_gene_sample_SNVs <- matrix(0,length(gene_list),length(sample_ID))
+mtx_gene_sample_Indels <- matrix(0,length(gene_list),length(sample_ID)) #matrix containing total number of Indels in each gene for each tumor sample
+mtx_gene_sample_SNVs <- matrix(0,length(gene_list),length(sample_ID)) #matrix containing total number of SNVs in each gene for each tumor sample
 for (i in 1:length(gene_list)){
   ###counting total number of Indels and SNVs in each gene###
   gene_mutation_class <- as.character(df_gene_mutation[which(df_gene_mutation$SYMBOL==gene_list[i]),]$mutation_class)
+  gene_mutation_c_nc <- as.character(df_gene_mutation[which(df_gene_mutation$SYMBOL==gene_list[i]),]$coding_noncoding)
   gene_total_mutations[i] <- length(gene_mutation_class)
-  gene_total_Indels[i] <- length(gene_mutation_class[which(gene_mutation_class=="c-Indels" | gene_mutation_class=="nc-Indels")])
-  gene_coding_Indels[i] <- length(gene_mutation_class[which(gene_mutation_class=="c-Indels")])
-  gene_total_SNVs[i] <- length(gene_mutation_class[which(gene_mutation_class=="c-SNVs" | gene_mutation_class=="nc-SNVs")])
-  gene_coding_SNVs[i] <- length(gene_mutation_class[which(gene_mutation_class=="c-SNVs")])
+  gene_total_Indels[i] <- length(gene_mutation_class[which(gene_mutation_class=="Indels")])
+  gene_coding_Indels[i] <- length(gene_mutation_class[which(gene_mutation_class=="Indels" & gene_mutation_c_nc=="c")])
+  gene_total_SNVs[i] <- length(gene_mutation_class[which(gene_mutation_class=="SNVs")])
+  gene_coding_SNVs[i] <- length(gene_mutation_class[which(gene_mutation_class=="SNVs" & gene_mutation_c_nc=="c")])
   
   ###counting total number of Indels and SNVs of each gene in each sample###
-  submtx_gene_Indels <- mmtx[which(df_gene_mutation$SYMBOL==gene_list[i] & (df_gene_mutation$mutation_class=="c-Indels" | df_gene_mutation$mutation_class=="nc-Indels")),]
-  submtx_gene_SNVs <- mmtx[which(df_gene_mutation$SYMBOL==gene_list[i] & (df_gene_mutation$mutation_class=="c-SNVs" | df_gene_mutation$mutation_class=="nc-SNVs")),]
+  submtx_gene_Indels <- mmtx[which(df_gene_mutation$SYMBOL==gene_list[i] & df_gene_mutation$mutation_class=="Indels"),]
+  submtx_gene_SNVs <- mmtx[which(df_gene_mutation$SYMBOL==gene_list[i] & df_gene_mutation$mutation_class=="SNVs"),]
   if (!is.null(nrow(submtx_gene_Indels))){
     for (j in seq_along(sample_ID)){
       mtx_gene_sample_Indels[i,j] <- length(which(submtx_gene_Indels[,j]!="."))+length(which(submtx_gene_Indels[,j]=="1/1"))
@@ -144,50 +131,52 @@ for (i in 1:length(gene_list)){
   }
 }
 df_gene_summary <- data.frame(gene_list,gene_total_mutations,gene_total_Indels,gene_total_SNVs,gene_coding_Indels,gene_coding_SNVs)
-mtx_gene_sample_mutations <- mtx_gene_sample_Indels+mtx_gene_sample_SNVs
+mtx_gene_sample_mutations <- mtx_gene_sample_Indels+mtx_gene_sample_SNVs #matrix containing total number of mutations in each gene for each tumor sample
 
 #####SNVs: mutation-type-specific distribution#####
-mutations_in_each_type <- rep(0,7)
-mtx_mtype_sample <- matrix(0,6,length(sample_ID))
+mutations_in_each_type <- rep(0,7) #vector containing the number of SNVs in each type
+mtx_mtype_sample <- matrix(0,7,length(sample_ID)) #matrix containing the number of SNVs of each type in each tumor sample
+vec_ref <- as.character(df_gene_mutation$REF)
+vec_alt <- as.character(df_gene_mutation$ALT)
+  
+SNVs_per_type <- function(ref1,alt1,ref2,alt2){
+  length(vec_ref[(vec_ref==ref1 & vec_alt==alt1) | (vec_ref==ref2 & vec_alt==alt2)])
+}
+SNV_types_per_tumor <- function(ref1,alt1,ref2,alt2){
+  submtx <- mmtx[which((vec_ref==ref1 & vec_alt==alt1) | (vec_ref==ref2 & vec_alt==alt2)),]
+  vec_mtype <- rep(0,length(sample_ID))
+  for (i in 1:length(sample_ID)){
+    vec_mtype[i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
+  }
+  vec_mtype
+}
+
 ###type 1: C>A###
-mutations_in_each_type[1] <- length(as.character(df_gene_mutation[which((df_gene_mutation$REF=="C" & df_gene_mutation$ALT=="A") | (df_gene_mutation$REF=="G" & df_gene_mutation$ALT=="T")),]$SYMBOL))
-submtx <- mmtx[which((df_gene_mutation$REF=="C" & df_gene_mutation$ALT=="A") | (df_gene_mutation$REF=="G" & df_gene_mutation$ALT=="T")),]
-for (i in 1:length(sample_ID)){
-  mtx_mtype_sample[1,i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
+mutations_in_each_type[1] <- SNVs_per_type("C","A","G","T")
+mtx_mtype_sample[1,] <- SNV_types_per_tumor("C","A","G","T")
 ###type 2: C>G###
-mutations_in_each_type[2] <- length(as.character(df_gene_mutation[which((df_gene_mutation$REF=="C" & df_gene_mutation$ALT=="G") | (df_gene_mutation$REF=="G" & df_gene_mutation$ALT=="C")),]$SYMBOL))
-submtx <- mmtx[which((df_gene_mutation$REF=="C" & df_gene_mutation$ALT=="G") | (df_gene_mutation$REF=="G" & df_gene_mutation$ALT=="C")),]
-for (i in 1:length(sample_ID)){
-  mtx_mtype_sample[2,i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
+mutations_in_each_type[2] <- SNVs_per_type("C","G","G","C")
+mtx_mtype_sample[2,] <- SNV_types_per_tumor("C","G","G","C")
 ###type 3: C>T###
-mutations_in_each_type[3] <- length(as.character(df_gene_mutation[which((df_gene_mutation$REF=="C" & df_gene_mutation$ALT=="T") | (df_gene_mutation$REF=="G" & df_gene_mutation$ALT=="A")),]$SYMBOL))
-submtx <- mmtx[which((df_gene_mutation$REF=="C" & df_gene_mutation$ALT=="T") | (df_gene_mutation$REF=="G" & df_gene_mutation$ALT=="A")),]
-for (i in 1:length(sample_ID)){
-  mtx_mtype_sample[3,i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
+mutations_in_each_type[3] <- SNVs_per_type("C","T","G","A")
+mtx_mtype_sample[3,] <- SNV_types_per_tumor("C","T","G","A")
 ###type 4: T>A###
-mutations_in_each_type[4] <- length(as.character(df_gene_mutation[which((df_gene_mutation$REF=="T" & df_gene_mutation$ALT=="A") | (df_gene_mutation$REF=="A" & df_gene_mutation$ALT=="T")),]$SYMBOL))
-submtx <- mmtx[which((df_gene_mutation$REF=="T" & df_gene_mutation$ALT=="A") | (df_gene_mutation$REF=="A" & df_gene_mutation$ALT=="T")),]
-for (i in 1:length(sample_ID)){
-  mtx_mtype_sample[4,i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
+mutations_in_each_type[4] <- SNVs_per_type("T","A","A","T")
+mtx_mtype_sample[4,] <- SNV_types_per_tumor("T","A","A","T")
 ###type 5: T>C###
-mutations_in_each_type[5] <- length(as.character(df_gene_mutation[which((df_gene_mutation$REF=="T" & df_gene_mutation$ALT=="C") | (df_gene_mutation$REF=="A" & df_gene_mutation$ALT=="G")),]$SYMBOL))
-submtx <- mmtx[which((df_gene_mutation$REF=="T" & df_gene_mutation$ALT=="C") | (df_gene_mutation$REF=="A" & df_gene_mutation$ALT=="G")),]
-for (i in 1:length(sample_ID)){
-  mtx_mtype_sample[5,i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
+mutations_in_each_type[5] <- SNVs_per_type("T","C","A","G")
+mtx_mtype_sample[5,] <- SNV_types_per_tumor("T","C","A","G")
 ###type 6: T>G###
-mutations_in_each_type[6] <- length(as.character(df_gene_mutation[which((df_gene_mutation$REF=="T" & df_gene_mutation$ALT=="G") | (df_gene_mutation$REF=="A" & df_gene_mutation$ALT=="C")),]$SYMBOL))
-submtx <- mmtx[which((df_gene_mutation$REF=="T" & df_gene_mutation$ALT=="G") | (df_gene_mutation$REF=="A" & df_gene_mutation$ALT=="C")),]
-for (i in 1:length(sample_ID)){
-  mtx_mtype_sample[6,i] <- length(which(submtx[,i]!="."))+length(which(submtx[,i]=="1/1"))
-}
+mutations_in_each_type[6] <- SNVs_per_type("T","G","A","C")
+mtx_mtype_sample[6,] <- SNV_types_per_tumor("T","G","A","C")
+###sum of all SNV types###
 mutations_in_each_type[7] <- sum(mutations_in_each_type[1:6])
+vec_SNV_sum <- colSums(mtx_mtype_sample[1:6,])
+###proportion of C>T among all SNV types in each tumor sample###
+mtx_mtype_sample[7,] <- mtx_mtype_sample[3,]/vec_SNV_sum
+
 df_mtx_mtype_sample <- data.frame(t(mtx_mtype_sample))
-colnames(df_mtx_mtype_sample) <- c("C_to_A","C_to_G","C_to_T","T_to_A","T_to_C","T_to_G")
+colnames(df_mtx_mtype_sample) <- c("C_to_A","C_to_G","C_to_T","T_to_A","T_to_C","T_to_G","proportion_C_to_T")
 df_ID_MSI <- cbind(df_ID_MSI,df_mtx_mtype_sample)
 ```
 
@@ -195,7 +184,7 @@ df_ID_MSI <- cbind(df_ID_MSI,df_mtx_mtype_sample)
 
 ```{r echo=FALSE}
 ###plot the total number of Indels and SNVs in each sample###
-df <- df_ID_MSI[,c(1,2,3,4,6)]
+df <- df_ID_MSI[,c(1,2,3,4,5)]
 dfl <- melt(df,id.vars = c("sample_ID","MSI_status","total_mutations"))
 p_total_Indels_SNVs <- ggplot(dfl,aes(x=reorder(sample_ID,-total_mutations),y=value,fill=factor(MSI_status),alpha=variable)) +
   geom_bar(stat="identity",size=0.2) + ylab("Frequency of mutations") + xlab("Tumor samples") + 
@@ -206,7 +195,7 @@ p_total_Indels_SNVs <- ggplot(dfl,aes(x=reorder(sample_ID,-total_mutations),y=va
 panel.background = element_blank(), axis.line = element_line(colour = "black"))
 
 ###plot the total number of Indels and SNVs within coding regions in each sample###
-df <- df_ID_MSI[,c(1,2,5,7)]
+df <- df_ID_MSI[,c(1,2,6,7)]
 df$total_coding_mutations <- as.vector(df$coding_Indels)+as.vector(df$coding_SNVs)
 dfl <- melt(df,id.vars = c("sample_ID","MSI_status","total_coding_mutations"))
 p_coding_Indels_SNVs <- ggplot(dfl,aes(x=reorder(sample_ID,-total_coding_mutations),y=value,fill=factor(MSI_status),alpha=variable)) +
@@ -228,10 +217,10 @@ p_gene_Indels_SNVs <- ggplot(dfl,aes(x=reorder(gene_list,-gene_total_mutations),
 panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
 
 ###plot C>T mutation against total number of mutations in each sample###
-df <- df_ID_MSI[,c(1,2,3,10)]
-p_C_T_scatter <- ggplot(df, aes(x=total_mutations,y=C_to_T)) + 
+df <- df_ID_MSI[,c(1,2,3,14)]
+p_C_T_scatter <- ggplot(df, aes(x=total_mutations,y=proportion_C_to_T)) + 
   geom_point() + geom_smooth(method=lm, linetype="dashed", color="red3") +
-  ylab("Number of C>T mutations") + xlab("Total number of mutations in each sample") + 
+  ylab("proportion of C>T mutations") + xlab("Total number of mutations in each sample") + 
   ggtitle("Scatter plot of C>T transition and total number of mutations in each tumor sample") + theme_bw() +
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
 panel.background = element_blank(), axis.line = element_line(colour = "black"))
@@ -272,17 +261,18 @@ df_tmp[which(df_tmp$presumed.wild.type.count<=250),]
 ```
 
 ### 7) Histograms of total mutations within each gene in each tumor sample
-```{r echo=FALSE}
+```{r echo=FALSE,warning=FALSE}
 for (i in seq_along(gene_list)){
   df <- data.frame(sample_ID=df_ID_MSI$sample_ID,MSI_status=df_ID_MSI$MSI_status,total_mutations=mtx_gene_sample_mutations[i,],total_Indels=mtx_gene_sample_Indels[i,],total_SNVs=mtx_gene_sample_SNVs[i,])
   dfl <- melt(df,id.vars = c("sample_ID","MSI_status","total_mutations"))
-  plot <- ggplot(dfl,aes(x=reorder(sample_ID,-total_mutations),y=value,fill=factor(MSI_status),alpha=variable)) +
+  p <- ggplot(dfl,aes(x=reorder(sample_ID,-total_mutations),y=value,fill=factor(MSI_status),alpha=variable)) +
   geom_bar(stat="identity",size=0.2) + ylab("Frequency of mutations") + xlab("Tumor samples") + 
   ggtitle(paste('Distribution of Indels and SNVs in ', gene_list[i], ' in each tumor sample', sep='')) +
   scale_fill_manual(values=c("red3","navy","grey50")) +
   scale_alpha_discrete(range=c(0.3,0.8)) + theme_bw() +
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
 panel.background = element_blank(), axis.line = element_line(colour = "black"))
-  print(plot)
+  print(p)
 }
+
 ```
