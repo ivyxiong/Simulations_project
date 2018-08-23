@@ -1,0 +1,171 @@
+---
+title: "Simulation of inverted risk SNPs in breast and ovarian cancers"
+author: "Ivy"
+output: html_notebook
+---
+
+```{r echo=FALSE}
+###read in the input files of SNPs that are associated with inverted risks in BC and OC separately
+df_bc_482 <- as.data.frame(read.csv("~/Documents/Project/Input/BC_meta_erpos_erneg_disparity_point01.csv",header=F,sep=","))
+df_oc_13804 <- as.data.frame(read.csv("~/Documents/Project/Input/OC_lgsoc_hgsoc_disparity_point05.csv",header=F,sep=","))
+colnames(df_bc_482) <- c("snp_id","chr","pos","a0","a1","RAF_low_m","beta_low_m","se_low_m","p_low_m","RAF_high_m","beta_high_m","se_high_m","p_high_m")
+colnames(df_oc_13804) <- c("snp_id","chr","pos","a0","a1","RAF","R2","beta_low_m","se_low_m","p_low_m","beta_high_m","se_high_m","p_high_m")
+```
+
+
+```{r echo=FALSE,warning=FALSE}
+###annotate each SNP entry for mapped genes
+#source("https://bioconductor.org/biocLite.R")
+#biocLite("GenomicRanges")
+#biocLite("rtracklayer")
+#biocLite("biomaRt")
+library(GenomicRanges)
+library(rtracklayer)
+library(biomaRt)
+
+###read in refseq and set the range of mapping (e.g. 10KB)###
+refseq <- as.data.frame(read.csv("~/Documents/Project/Input/hg38.ensembl.biomaRt.27486.csv", header=T, sep=","))
+refseq$start2 <- refseq$start_position - 10000
+refseq$end2 <- refseq$end_position + 10000
+
+chain <- import.chain("~/Documents/Project/Input/hg19ToHg38.over.chain")
+
+###overlap the SNPs' postion to gene ranges###
+map_snp2gene <- function(snp){
+  snp$seqnames <- gsub("^", "chr", snp$chr)
+  hg19 <- GRanges(snp$seqnames, IRanges(start=snp$pos, end=snp$pos), start_hg19 = snp$pos,end_hg19=snp$pos)
+  hg38 <- liftOver(hg19, chain)
+  snp_hg38 <- as.data.frame(unlist(hg38))
+  snp_hg38$chr <- gsub("[\\chr,]", "", snp_hg38$seqnames)
+  query = with(snp_hg38, GRanges(snp_hg38$seqnames, IRanges(start=snp_hg38$start, end=snp_hg38$end)))
+  subject = with(refseq, GRanges(refseq$chromosome_name, IRanges(start=start2, end=end2)))
+  hits = findOverlaps(query, subject)
+  match = data.frame(snp[queryHits(hits),], refseq[subjectHits(hits),])
+  mapped <- data.frame(match$snp_id,match$entrezgene)
+  colnames(mapped) <- c("snp_id","entrezgene")
+  mapped <- aggregate(mapped$entrezgene, list(mapped$snp_id), paste, collapse=";")
+  colnames(mapped) <- c("snp_id","entrezgene")
+  mapped
+}
+
+mapped_bc <- map_snp2gene(df_bc_482)
+mapped_oc <- map_snp2gene(df_oc_13804)
+
+```
+
+```{r echo=FALSE}
+###annotate each mapped SNP for KEGG pathways
+mapped_gene <- as.character(mapped_bc$entrezgene)
+pathway_gene <- as.data.frame(read.csv("~/Documents/Project/Input/KEGG_220pathway_gene_list.csv", header=T, sep=","))
+pathway_gene <- pathway_gene[-1,]
+pathway_list <- as.data.frame(read.table("~/Documents/Project/Input/KEGG_pathway_list.txt", header=F))
+pathway_list <- as.character(pathway_list[[2]])
+KEGG_pathway_entrezgene <- data.frame(entrezgene="-",pathway=".")
+
+for (i in 1:220){
+  pathway_entrezID <- as.character(pathway_gene[[i]])
+  pathway_entrezID <- pathway_entrezID[!pathway_entrezID==""]
+  df_tmp <- data.frame(entrezgene=pathway_entrezID,pathway=rep(pathway_list[i],length(pathway_entrezID)))
+  KEGG_pathway_entrezgene <- rbind(KEGG_pathway_entrezgene,df_tmp)
+}
+KEGG_pathway_entrezgene <- KEGG_pathway_entrezgene[-1,]
+
+###map genes to KEGG pathways###
+map_gene2pathway <- function(df){
+  entrezID_vec <- as.character(df$entrezgene)
+  entrezID_pathway <- rep("-",length(entrezID_vec))
+  for (i in 1:length(entrezID_vec)){
+    entrezIDs <- unlist(strsplit(entrezID_vec[i],";"))
+    mapped_entrezIDs <- merge(data.frame(entrezgene=entrezIDs),KEGG_pathway_entrezgene,by="entrezgene")
+    if (nrow(mapped_entrezIDs)!=0){entrezID_pathway[i] <- paste(as.character(mapped_entrezIDs$pathway),collapse=";")}
+  }
+  entrezID_pathway
+}
+
+mapped_bc$pathway <- map_gene2pathway(mapped_bc)
+df_bc_482 <- merge(df_bc_482,mapped_bc,by="snp_id",all.x=T,all.y=F,sort=F)
+mapped_oc$pathway <- map_gene2pathway(mapped_oc)
+df_oc_13804 <- merge(df_oc_13804,mapped_oc,by="snp_id",all.x=T,all.y=F,sort=F)
+
+```
+
+```{r echo=FALSE}
+###sample SNPs from the two pools of SNPs separately
+N_sim <- 1e4
+sim_snp_df <- function(N,df){
+  sim_snp <- rep(0,N*3)
+  for (i in 1:N){sim_snp[(3*i-2):(3*i)] <- sample(1:nrow(df),3,replace=F)}
+  v1 <- rep("-",N*3); v2 <- rep("-",N*3); v3 <- rep(0,N*3)
+  for (i in 1:(N*3)){
+    v1[i] <- as.character(df[sim_snp[i],"snp_id"])
+    v2[i] <- as.character(df[sim_snp[i],"pathway"])
+    v3[i] <- as.numeric(df[sim_snp[i],"beta_low_m"])
+    }
+  data.frame(snp_id=v1,pathway=v2,beta_low_m=v3)
+}
+
+sim_bc <- sim_snp_df(N_sim,df_bc_482)
+sim_oc <- sim_snp_df(N_sim,df_oc_13804)
+
+###Question One: How likely is it that 2 out of the 3 SNPs converge in the p53 pathway?
+#count the number of SNPs that are mapped to p53 pathway genes
+num_snps2p53pathway <- function(vec_pathway){
+  count_snps_p53pathway <- rep(0,length(vec_pathway))
+  for (i in 1:length(vec_pathway)){count_snps_p53pathway[i] <- length(grep("hsa04115",vec_pathway[(3*i-2):(3*i)]))}
+  count_snps_p53pathway
+}
+sim_bc_p53pathway_snp <- num_snps2p53pathway(as.character(sim_bc$pathway))
+sim_oc_p53pathway_snp <- num_snps2p53pathway(as.character(sim_oc$pathway))
+
+c <- length(intersect(which(sim_bc_p53pathway_snp>=2),which(sim_oc_p53pathway_snp>=2)))
+p1 <- round((c+1)/(N_sim+1),digits = 8)
+
+###Question Two: How likely is it that all 3 SNPs have consistent trend in association?
+product_beta <- rep(0,(N_sim*3))
+beta1 <- as.numeric(sim_bc$beta_low_m)
+beta2 <- as.numeric(sim_oc$beta_low_m)
+for (i in 1:(N_sim*3)){
+  product_beta[i] <- beta1[i]*beta2[i]
+}
+c <- rep(0,N_sim)
+for (i in 1:N_sim){
+  c[i] <- length(which(product_beta[(3*i-2):(3*i)]>0))
+}
+p2 <- round((length(which(c==3))+1)/(N_sim+1),digits=5)
+
+###Question Three: How likely is it that all 3 SNPs are shared between the two cancer types?
+num_common_snp <- rep(0,N_sim)
+snpid1 <- as.character(sim_bc$snp_id)
+snpid2 <- as.character(sim_oc$snp_id)
+
+for (i in 1:N_sim){
+  num_common_snp[i] <- length(intersect(snpid1[(3*i-2):(3*i)],snpid2[(3*i-2):(3*i)]))
+}
+p3 <- round((length(which(num_common_snp==3))+1)/(N_sim+1),digits = 8)
+
+###Question Four: Is inverted BC-CSGs enriched in p53 pathway?
+count_CSGs <- function(df){
+  dfs <- data.frame(entrezgene=df$entrezgene,pathway=df$pathway)
+  vec_total_CSG <- unique(unlist(strsplit(as.character(dfs$entrezgene),";")))
+  map_CSG2pathway <- merge(data.frame(entrezgene=vec_total_CSG),KEGG_pathway_entrezgene,by="entrezgene")
+  vec_CSG_in_pathway <- unique(as.character(map_CSG2pathway$entrezgene))
+  vec_CSG_in_p53pathway <- unique(as.character(map_CSG2pathway[map_CSG2pathway$pathway=="hsa04115",]$entrezgene))
+  c <- rep(0,3)
+  c[1] <- length(vec_total_CSG)
+  c[2] <- length(vec_CSG_in_pathway)
+  c[3] <- length(vec_CSG_in_p53pathway)
+  c
+}
+
+count_CSGs(df_bc_482)
+count_CSGs(df_oc_13804)
+count_CSGs(df_oc_13804[df_oc_13804$beta_low_m>0,])
+
+ensembl = useEnsembl("ensembl",dataset="hsapiens_gene_ensembl", version = 91)
+#listAttributes(ensembl)
+getBM("hgnc_symbol",filters = "entrezgene",values = "472",ensembl)
+phyper(2-1,68,24312-68,52,lower.tail = F)
+phyper(9-1,68,24312-68,3701,lower.tail = F)
+```
+
+
